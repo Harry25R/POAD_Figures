@@ -1,0 +1,179 @@
+---
+title: "DGF_Modelling"
+output: html_document
+date: "2022-10-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/PreTransplant/Normalised_Counts")
+fnames <- list.files()
+fnames <- paste0("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/PreTransplant/Normalised_Counts/", fnames)
+
+Data_List <- lapply(fnames, function(x){
+  df <- read.csv(x)
+  df <- df[,-1] 
+  colnames(df)[grep("Gene", colnames(df))] <- "Gene_Symbol"
+  df <- df %>%
+    relocate("Gene_Symbol")
+})
+
+data_lengths <- lapply(Data_List, function(x) dim(x)[2]-1)
+suppressWarnings(
+  Data <- Reduce(function(x, y) merge(x, y, by = "Gene_Symbol", all = TRUE), Data_List)
+)
+Data <- Data %>%
+  na.omit() 
+Data <- Data[which(!duplicated(Data$Gene_Symbol)),]
+Data <- Data %>% 
+  tibble::remove_rownames() %>%
+  tibble::column_to_rownames("Gene_Symbol")
+```
+
+```{r}
+Batch <- Tissue <- list()
+for(i in 1:length(fnames)){
+    Batch[[i]] <- rep(str_split_n(fnames[i], "_", 3), data_lengths[[i]])
+    Tissue[[i]] <- rep(gsub(".csv", "", str_split_n(fnames[i], "_", 6)), data_lengths[[i]])
+}
+
+Batch <- Batch %>%
+  unlist()
+
+Tissue <- Tissue %>%
+  unlist() %>%
+  split(Batch)
+
+Condition <- ifelse(grepl("Control", colnames(Data)), "Control", "EAD") 
+```
+
+Splitting by batch
+```{r}
+Data <- Data %>%
+  na.omit() %>%
+  t() %>% 
+  data.frame() %>%
+  split(Batch)
+
+Condition <- Condition %>%
+  split(Batch)
+```
+
+```{r}
+# AUC <- c()
+# for(i in seq_along(Data)){
+#   sig.genes <- PreProcess_Frank(Data[-i], Condition[-i], contrast = "EAD - Control", nFeatures = 50)
+#   Data_temp = lapply(Data, "[", , sig.genes)
+#   Data_temp = lapply(Data_temp, as.matrix)
+# 
+#   x_list <- lapply(Data_temp, as.matrix)[-i]
+#   y_list <- lapply(Condition, factor)[-i]
+# 
+#   fCPOP_model <- Frankenstein_CPOP(x_list, y_list, dataset_weights = Tissue[-i])
+#   pred <- predict_cpop2(fCPOP_model$models, newx = as.matrix(Data_temp[[i]]))
+# 
+#   roc_fCPOP <- roc(factor(Condition[[i]]), pred)
+#   AUC[i] <- as.numeric(roc_fCPOP$auc)
+# }
+```
+
+```{r}
+setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/NMP/Normalised_Counts")
+fnames <- list.files()
+fnames <- paste0("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/NMP/Normalised_Counts/", fnames)
+
+Data_List <- lapply(fnames, function(x){
+  df <- read.csv(x)
+  df <- df[,-1] 
+  colnames(df)[grep("Gene", colnames(df))] <- "Gene_Symbol"
+  df <- df %>%
+    relocate("Gene_Symbol")
+})
+
+data_lengths <- lapply(Data_List, function(x) dim(x)[2]-1)
+suppressWarnings(
+  Data_pred <- Reduce(function(x, y) merge(x, y, by = "Gene_Symbol", all = TRUE), Data_List)
+)
+Data_pred <- Data_pred %>%
+  na.omit() 
+Data_pred <- Data_pred[which(!duplicated(Data_pred$Gene_Symbol)),]
+Data_pred <- Data_pred %>% 
+  tibble::remove_rownames() %>%
+  tibble::column_to_rownames("Gene_Symbol")
+```
+
+```{r}
+int <- intersect(colnames(Data[[1]]), rownames(Data_pred))
+Data <- lapply(Data, "[", , int)
+
+sig.genes <- PreProcess_Frank(Data, Condition, contrast = "EAD - Control", nFeatures = 20)
+Data_temp = lapply(Data, "[", , sig.genes)
+Data_temp = lapply(Data_temp, as.matrix)
+
+x_list <- lapply(Data_temp, as.matrix)
+y_list <- lapply(Condition, factor)
+
+fCPOP_model <- Frankenstein_CPOP(x_list, y_list, dataset_weights = Tissue, sample_weights = TRUE)
+
+a1 <- fCPOP_model$feature %>%
+  tibble::enframe() %>%
+  arrange(value) %>%
+  mutate(weights = 1/(value)^(1/2)) %>%
+  top_n(weights, n = 20) %>%
+  ggplot(aes(x = weights, y = reorder(name, weights), fill = weights)) + geom_bar(stat = "identity") +
+  theme_bw() + ylab("Features") + scale_fill_viridis_c(name = "Lasso Weights", option = "plasma") + ggtitle("Plot of final lasso weights")
+
+a2 <- CPOP_coefPlot(fCPOP_model) + ggtitle("Plot of non-zero betas")
+a2
+```
+
+
+```{r, fig.width=12, fig.height=4}
+ggpubr::ggarrange(a1,a2, ncol = 2, labels = "AUTO")
+```
+Predicting on the NMP Data
+```{r}
+Condition <- ifelse(grepl("Control", colnames(Data_pred)), "PreTx", "NMP") 
+Data_pred = Data_pred[sig.genes,] 
+
+pred <- predict_cpop2(fCPOP_model$models, newx = as.matrix(t(Data_pred)))
+```
+
+```{r}
+setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/NMP/Normalised_Counts")
+fnames <- list.files()
+fnames <- paste0("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/NMP/Normalised_Counts/", fnames)
+Batch <- Tissue <- Time <- list()
+for(i in 1:length(fnames)){
+    Batch[[i]] <- rep(str_split_n(fnames[i], "_", 3), data_lengths[[i]])
+    Time[[i]] <- rep(str_split_n(fnames[i], "_", 5), data_lengths[[i]])
+    Tissue[[i]] <- rep(gsub(".csv", "", str_split_n(fnames[i], "_", 6)), data_lengths[[i]])
+}
+
+Batch <- Batch %>%
+  unlist()
+Time <- Time %>%
+  unlist()
+Tissue <- Tissue %>%
+  unlist()
+
+pred %>%
+  data.frame() %>%
+  mutate(Condition = Condition,
+         Dataset = paste(Batch, Tissue, Time, sep = "_"),
+         Time = Time) %>%
+  filter(Time != "NMP") %>%
+  mutate(Timeh = as.numeric(sub("NMP", "", Time))) %>%
+  ggplot(aes(x = reorder(Dataset, Timeh), y = lambda.min, fill = Condition, color = as.character(Timeh))) + 
+  geom_hline(aes(yintercept = 0.5), linetype="dotted") + 
+  geom_boxplot() + theme_bw() + ylab("CPOP Predicition Score") + xlab("Datasets") +
+  scale_color_brewer(palette="YlOrRd", name = "Time on NMP\n(Hours)") +
+  scale_fill_manual(values = c("grey90", "grey30")) + 
+  theme(axis.text.x = element_text(angle = 45, h = 1)) + 
+  ggtitle("CPOP Prediction Scores Decreases in NMP")
+```
+
+

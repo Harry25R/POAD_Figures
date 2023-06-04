@@ -32,6 +32,11 @@ Data <- Data %>%
   tibble::remove_rownames() %>%
   tibble::column_to_rownames("Gene_Symbol")
 ```
+used for training:
+[1] "Counts_GSE151648_Biopsy_IRI_Liver.csv"  "Counts_GSE23649_Biopsy_DGF_Kidney.csv" 
+[3] "Counts_GSE37838_Biopsy_DGF_Kidney.csv"  "Counts_GSE53769_Biopsy_AKI_Kidney.csv" 
+[5] "Counts_GSE54888_Biopsy_DGF_Kidney.csv"  "Counts_GSE72925_Biopsy_TCMR_Kidney.csv"
+[7] "Counts_GSE90861_Biopsy_DGF_Kidney.csv" 
 
 ```{r}
 Batch <- Tissue <- list()

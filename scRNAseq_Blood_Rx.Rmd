@@ -1,0 +1,159 @@
+---
+title: "Single Cell Blood RNAseq"
+author: "Harry Robertson"
+date: '2022-12-06'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(GEOquery)
+```
+
+```{r}
+library(readr)
+setwd("~/Desktop/Single Cell RNAseq/PBMC/GSE190329/Counts")
+counts_files <- list.files()
+Seruat_list <- lapply(counts_files, read_rds)
+lengths <- Seruat_list %>% sapply(ncol)
+
+Samples <- rep(paste("Sample", 1:4), lengths)
+Condition <- ifelse(Samples %in% c("Sample 1", "Sample 2"), "Control", "ABMR")
+
+setwd("~/Desktop/Single Cell RNAseq/PBMC/GSE190329/Azimuth")
+azimuth_files <- list.files()
+predictions <- lapply(azimuth_files, function(x){
+  read.delim(x, row.names = 1)
+})
+
+library(Seurat)
+for(i in seq_along(Seruat_list)){
+  Seruat_list[[i]] <- AddMetaData(object = Seruat_list[[i]], metadata = predictions[[i]])
+}
+
+Seruat_list <- lapply(X = Seruat_list, FUN = function(x) {
+    x <- NormalizeData(x, verbose = FALSE)
+    x <- FindVariableFeatures(x, verbose = FALSE)
+})
+features <- SelectIntegrationFeatures(object.list = Seruat_list)
+Seruat_list <- lapply(X = Seruat_list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+anchors <- FindIntegrationAnchors(object.list = Seruat_list, 
+                                  anchor.features = features, 
+                                  k.anchor = 20,
+                                  reduction = "rpca", dims = 1:50)
+
+Seruat_list <- IntegrateData(anchorset = anchors, dims = 1:50)
+Seruat_list <- ScaleData(Seruat_list, verbose = FALSE)
+Seruat_list <- RunPCA(Seruat_list, verbose = FALSE)
+Seruat_list <- RunTSNE(Seruat_list, verbose = FALSE, dims = 1:50)
+Seruat_list <- RunUMAP(Seruat_list, dims = 1:50)
+
+Seruat_list$Sample <- Samples
+Seruat_list$Condition <- Condition
+TSNEPlot(Seruat_list, group.by = "Sample") + ggtitle("") + theme_bw() 
+```
+
+
+```{r}
+names(table(Seruat_list$predicted.celltype.l2))
+names(cty_cols2)
+
+cty_cols3 <- cty_cols2[1:length(names(table(Seruat_list$predicted.celltype.l2)))]
+names(cty_cols3) <- names(table(Seruat_list$predicted.celltype.l2))
+
+# DimPlot(Seruat_list, reduction = "tsne", group.by = "predicted.celltype.l2", cols=cty_cols3) + theme_bw()
+
+a <- TSNEPlot(Seruat_list, group.by = "predicted.celltype.l2", cols=cty_cols3) + ggtitle("") + theme_bw() 
+aggsave()
+clustered_data <- Seruat_list
+
+```
+
+```{r}
+Seurat::
+```
+
+
+```{r}
+library(dittoSeq)
+DefaultAssay(Seruat_list) <- "RNA"
+
+dittoSeq::dittoDotPlot(Seruat_list, vars = names(sort(gene.zscores, decreasing = T))[1:10], 
+                       split.by = "Condition", group.by = "predicted.celltype.l2")
+
+
+dittoSeq::multi_dittoPlot(Seruat_list, vars = names(sort(gene.zscores, decreasing = T))[1:10], 
+                       split.by = "Condition", group.by = "predicted.celltype.l2")
+library(Nebulosa)
+
+a1 <- Nebulosa::plot_density(Seruat_list, features = names(sort(gene.zscores, decreasing = T))[1:15],
+                             joint = TRUE, combine = FALSE, pal = "magma") 
+
+a1[[length(a1)]] + facet_wrap(.~Seruat_list$Condition) + ggtitle("Blood Panel")
+
+mat <- as.matrix(Seruat_list@assays$RNA@counts) %>%
+  data.frame()
+
+library(ggsci)
+mat %>%
+  filter(rownames(.) %in% names(sort(gene.zscores, decreasing = T))[1:15]) %>%
+  t() %>% 
+  data.frame() %>%
+  mutate(Condition = Seruat_list$Condition, 
+         CellType = Seruat_list$predicted.celltype.l1) %>%
+  reshape2::melt() %>%
+  ggplot(aes(y = Condition, x = CellType, color = Condition, size = value)) + geom_point()  + theme_bw() + 
+  scale_color_canva() + theme(axis.text.x = element_text(angle = 45, h = 1))
+```
+
+```{r}
+setwd("~/Desktop/Single Cell RNAseq/PBMC/GSE190329/Counts")
+counts_files <- list.files()
+Seruat_list <- lapply(counts_files, read_rds)
+lengths <- Seruat_list %>% sapply(ncol)
+
+Samples <- rep(paste("Sample", 1:4), lengths)
+Condition <- ifelse(Samples %in% c("Sample 1", "Sample 2"), "Control", "ABMR")
+
+setwd("~/Desktop/Single Cell RNAseq/PBMC/GSE190329/Azimuth")
+azimuth_files <- list.files()
+predictions <- lapply(azimuth_files, function(x){
+  read.delim(x, row.names = 1)
+})
+
+library(Seurat)
+for(i in seq_along(Seruat_list)){
+  Seruat_list[[i]] <- AddMetaData(object = Seruat_list[[i]], metadata = predictions[[i]])
+}
+
+Cepo_list <- lapply(Seruat_list, function(x){
+  Cepo(exprsMat = x@assays$RNA@counts, cellTypes = x$predicted.celltype.l2, minCells = 1, exprsPct = 0.05)
+  })
+Cepo_list <- lapply(Cepo_list, function(x){
+  x$stats
+})
+
+for(i in seq_along(Cepo_list)){
+  Cepo_list[[i]] <- Cepo_list[[i]] %>%
+    data.frame() %>%
+    mutate(Sample = paste("Sample", i, sep = "_"))
+}
+
+lapply(Cepo_list, function(x)topGenes(x))
+Cepo <- do.call(cbind, Cepo_list)
+
+
+pheatmap(cor(data.frame(Cepo$stats)))
+
+%>%
+  reshape2::melt() %>%
+  ggplot(aes(x = variable, y = value)) + geom_hline(yintercept = 0, linetype = "dashed") + geom_boxplot() + theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, h = 1))
+```
+
+
+

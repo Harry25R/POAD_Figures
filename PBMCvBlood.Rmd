@@ -1,0 +1,189 @@
+---
+title: "BloodVsPBMC"
+author: "Harry Robertson"
+date: '2022-12-06'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tibble)
+library(dplyr)
+
+12!
+```
+
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Rejection/Processed_Datasets")
+files <- list.files(pattern = "Blood")
+Blood_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+  y %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene.Symbol) & !is.na(Gene.Symbol)) %>%
+    tibble::column_to_rownames("Gene.Symbol") %>%
+    dplyr::select(t)
+})
+
+keep <- Blood_Counts %>% sapply(nrow) > 8000
+Blood_Counts <- Blood_Counts[keep]
+
+int <- Reduce(intersect, lapply(Blood_Counts, rownames))
+test_list <-  lapply(Blood_Counts, function(x)x[int,, drop = FALSE])
+
+test_df <- do.call(cbind, test_list)
+Z.Scores.All <- apply(test_df, 2, function(x) {
+        stats::qnorm(rank(x)/(nrow(test_df) + 1))
+})
+data(Pathways, package = "directPA")
+gene.pvalues <- apply(Z.Scores.All, 1, function(x) {
+  directPA::geneStats(x)
+})
+gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+blood_df <- gene.zscores %>% tibble::enframe()
+```
+
+Common Genes to Organs
+```{r}
+Tissue <- sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 5))
+Tissue[Tissue == ""] <- "Kidney"
+
+Kidney_idx <- Tissue == "Kidney"
+Liver_idx <- Tissue == "Liver"
+Heart_idx <- Tissue == "Heart"
+
+test_df.Kidney <- test_df[,Kidney_idx]
+test_df.Liver <- as.matrix(test_df[,Liver_idx])
+test_df.Heart <- test_df[,Heart_idx]
+
+Gene_sets <- lapply(list(test_df.Kidney, test_df.Liver, test_df.Heart), function(x){
+  Z.Scores.All <- apply(x, 2, function(y) {
+        stats::qnorm(rank(y)/(nrow(x) + 1))
+  })
+  data(Pathways, package = "directPA")
+  gene.pvalues <- apply(Z.Scores.All, 1, function(y) {
+    directPA::geneStats(y)
+  })
+  gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+  return(gene.zscores)
+})
+
+names(Gene_sets) <- c("Kidney", "Liver", "Heart")
+
+df <- do.call(cbind, lapply(Gene_sets, tibble::enframe))
+df <- df[,grep("value", colnames(df))]
+rownames(df) <- names(Gene_sets[[1]])
+df <- df[!is.infinite(rowMeans(df)),]
+
+library(GGally)
+library(ggfortify)
+
+df_venn <- abs(df) > 1.5 
+
+df_venn %>%
+  data.frame()
+
+library(VennDiagram)
+venn <- venn.diagram(list(A = df_venn[,1], B = df_venn[,2], C = df_venn[,3]), filename = NULL)
+
+library(ggvenn)
+df_venn %>%
+  data.frame() %>%
+  ggplot() +
+  geom_venn(aes(A = Kidney.value, B = Liver.value, C = Heart.value),
+            set_names = c("Kidney", "Liver", "Heart")) + theme_void()
+
+which(rowSums(df_venn) > 2)
+```
+
+```{r}
+ggpairs(df) + theme_bw()
+```
+
+
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Rejection/Processed_Datasets")
+files <- list.files(pattern = "PBMC")
+Blood_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+  y %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene.Symbol) & !is.na(Gene.Symbol)) %>%
+    tibble::column_to_rownames("Gene.Symbol") %>%
+    dplyr::select(t)
+})
+
+keep <- Blood_Counts %>% sapply(nrow) > 2000
+Blood_Counts <- Blood_Counts[keep]
+
+int <- Reduce(intersect, lapply(Blood_Counts, rownames))
+test_list <-  lapply(Blood_Counts, function(x)x[int,, drop = FALSE])
+
+test_df <- do.call(cbind, test_list)
+Z.Scores.All <- apply(test_df, 2, function(x) {
+        stats::qnorm(rank(x)/(nrow(test_df) + 1))
+})
+data(Pathways, package = "directPA")
+gene.pvalues <- apply(Z.Scores.All, 1, function(x) {
+  directPA::geneStats(x)
+})
+gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+PBMC_df <- gene.zscores %>% tibble::enframe()
+```
+
+```{r}
+df <- left_join(PBMC_df, blood_df, by = "name") %>%
+  na.omit()
+colnames(df) <- c("Gene", "PBMC", "WholeBlood")
+
+m <- lm(df$WholeBlood ~ df$PBMC)
+label = paste(format(summary(m)$r.squared, digits = 3))
+
+df %>%
+  data.frame() %>%
+  ggplot(aes(x = PBMC, y = WholeBlood)) + geom_point(alpha = 0.6) + theme_bw() + stat_smooth(method = "lm") +
+  ylab("Whole Blood") + xlab("PBMC") 
+```
+
+```{r, fig.height=6, fig.width=4}
+pvalue2sided <- 2 * stats::pnorm(-abs(gene.zscores))
+sig.genes <- names(sort(pvalue2sided))[1:50]
+
+Z.Score.Significant <- Z.Scores.All[which(rownames(Z.Scores.All) %in% sig.genes),]
+pheatmap::pheatmap(Z.Score.Significant,
+         color = colorRampPalette(c("blue", "navy", "white", "firebrick3", "red"))(1500),
+         cellwidth = 50,
+         cellheight = 10,
+         angle_col = 315,
+         show_colnames = FALSE,
+         scale = "column")
+```
+
+```{r}
+df_pvw <- df %>%
+  column_to_rownames("Gene")
+dE2 <- myDirectExplorer2d(df_pvw, top = 15, annotation = Pathways.reactome)
+
+dE2$path.tab <- dE2$path.tab %>%
+  data.frame()
+colnames(dE2$path.tab)[-1] <- colnames(dE2$gene.tab)
+```
+
+
+```{r, fig.width=8, fig.height=6}
+library(stringr)
+dE2$path.tab %>%
+  dplyr::select(size, `+*`) %>%
+  arrange(`+*`) %>%
+  top_n(-20) %>%
+  mutate(Pathway = sub("REACTOME_", "", rownames(.)),
+         Pathway = str_wrap(gsub("_", " ", Pathway), width = 60),
+         Score = -log10(`+*`)) %>%
+  ggplot(aes(y = reorder(Pathway, Score), x = Score)) + 
+  geom_bar(stat = "identity", fill = "#FFBF00") + 
+  theme_bw() + ylab("") + xlab("-log10 P-Value")
+```
+

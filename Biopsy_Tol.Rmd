@@ -1,0 +1,166 @@
+---
+title: "Biopsy_Tol"
+author: "Harry Robertson"
+date: '2022-12-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggpubr)
+library(CPOP2)
+```
+
+Heatmap of enriched Genes
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Tolerance/Processed_Datasets")
+files <- list.files(pattern = "Blood")
+Biopsy_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+})
+# colnames(Biopsy_Counts[[10]])[2] <- "Gene.Symbol"
+Biopsy_Counts <- lapply(Biopsy_Counts, function(x){
+  x %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene.Symbol) & !is.na(Gene.Symbol)) %>%
+    tibble::column_to_rownames("Gene.Symbol") %>%
+    dplyr::select(t)
+})
+
+keep <- Biopsy_Counts %>% sapply(nrow) > 8000
+Biopsy_Counts <- Biopsy_Counts[keep]
+
+int <- Reduce(intersect, lapply(Biopsy_Counts, rownames))
+test_list <-  lapply(Biopsy_Counts, function(x)x[int,, drop = FALSE])
+
+test_df <- do.call(cbind, test_list)
+Z.Scores.All <- apply(test_df, 2, function(x) {
+        stats::qnorm(rank(x)/(nrow(test_df) + 1))
+})
+data(Pathways, package = "directPA")
+gene.pvalues <- apply(Z.Scores.All, 1, function(x) {
+  directPA::geneStats(x)
+})
+gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+pvalue2sided <- 2 * stats::pnorm(-abs(gene.zscores))
+sig.genes <- names(sort(pvalue2sided[pvalue2sided < 1*10^-3]))
+
+# Plotting Results
+GSE <- paste(CPOP2:::str_split_n(files[keep], "_", 2), sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 4)), sep = "_")
+Tissue <- sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 5))
+Tissue[Tissue == ""] <- "Kidney"
+anno_df <- data.frame(GSE, Tissue, row.names = paste("Dataset", 1:length(Tissue)))
+
+Z.Score.Significant <- Z.Scores.All[which(rownames(Z.Scores.All) %in% sig.genes),]
+colnames(Z.Score.Significant) <- rownames(anno_df)
+```
+
+```{r, fig.height=10}
+library(pheatmap)
+pheatmap::pheatmap(Z.Score.Significant,
+         color = colorRampPalette(c("blue", "navy", "white", "firebrick3", "red"))(1500),
+         cellwidth = 15,
+         cellheight = 9,
+         angle_col = 315,
+         show_colnames = FALSE,
+         annotation = anno_df %>% dplyr::select(Tissue),
+         scale = "column")
+
+pvalue2sided["IL7R"]
+```
+
+Pathways
+```{r, fig.height=5, fig.width=7}
+library(msigdbr)
+library(fgsea)
+library(clusterProfiler)
+
+gene.zscores <- gene.zscores[!is.infinite(gene.zscores)]
+gene_list <- gene.zscores[which(abs(gene.zscores) > 4)]
+gene_list = sort(gene_list, decreasing = TRUE)
+
+library(org.Hs.eg.db)
+organism = "org.Hs.eg.db"
+gse <- gseGO(geneList=gene_list, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05,
+             verbose = TRUE, 
+             OrgDb = organism,
+             seed = 1234, 
+             eps = 0,
+             pAdjustMethod = "none")
+
+gse@result %>%
+  mutate(Score = -log10(pvalue), Direction = ifelse(NES > 0, "Up-Regulated", "Down-Regulated")) %>%
+  top_n(Score, n = 30) %>%
+  ggplot(aes(y = reorder(Description, Score), x = Score)) + geom_point(size = 4) + theme_bw() + ylab("") +
+  xlab("-log10 pvalue") + facet_wrap(.~Direction)
+```
+
+Can I do pathways on 
+```{r}
+library(Homo.sapiens)
+EntrezID <- mapIds(Homo.sapiens, keys = names(gene_list), keytype = "SYMBOL",
+                   column = "ENTREZID", multiVals = "first")
+EntrezID <- EntrezID[which(!is.na(EntrezID) & !duplicated(EntrezID))]
+GO <- enrichGO(names(gene_list), OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "BP")
+
+goplot(GO, showCategory = 5)
+```
+
+Common Genes to Organs
+```{r}
+Kidney_idx <- Tissue == "Kidney"
+Liver_idx <- Tissue == "Liver"
+Lung_idx <- Tissue == "Lung"
+Heart_idx <- Tissue == "Heart"
+
+test_df.Kidney <- test_df[,Kidney_idx]
+test_df.Liver <- test_df[,Liver_idx]
+test_df.Lung <- test_df[,Lung_idx]
+test_df.Heart <- test_df[,Heart_idx]
+
+Gene_sets <- lapply(list(test_df.Kidney, test_df.Liver, test_df.Lung, test_df.Heart), function(x){
+  Z.Scores.All <- apply(x, 2, function(y) {
+        stats::qnorm(rank(y)/(nrow(x) + 1))
+  })
+  data(Pathways, package = "directPA")
+  gene.pvalues <- apply(Z.Scores.All, 1, function(y) {
+    directPA::geneStats(y)
+  })
+  gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+  return(gene.zscores)
+})
+
+names(Gene_sets) <- c("Kidney", "Liver", "Lung", "Heart")
+
+df <- do.call(cbind, lapply(Gene_sets, tibble::enframe))
+df <- df[,grep("value", colnames(df))]
+rownames(df) <- names(Gene_sets[[1]])
+df <- df[!is.infinite(rowMeans(df)),]
+
+library(GGally)
+library(ggfortify)
+```
+
+If z-score is greater than 2 call is DE in a particular set.
+```{r}
+df_venn <- abs(df) > 2 
+
+chisq.test(df)
+
+library(ggvenn)
+df_venn %>%
+  data.frame() %>%
+  ggplot() +
+  geom_venn(aes(A = Kidney.value, B = Liver.value, C = Lung.value, D = Heart.value),
+            set_names = c("Kidney", "Liver", "Lung", "Heart")) + theme_void()
+```
+
+

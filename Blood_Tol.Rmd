@@ -1,0 +1,445 @@
+---
+title: "Blood_Tolerance"
+author: "Harry Robertson"
+date: '2022-12-05'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggpubr)
+library(CPOP2)
+```
+
+Heatmap of enriched Genes
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Tolerance/Processed_Datasets")
+files <- list.files(pattern = "Blood")
+Blood_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+  y %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene.Symbol) & !is.na(Gene.Symbol)) %>%
+    tibble::column_to_rownames("Gene.Symbol") %>%
+    dplyr::select(t)
+})
+
+keep <- Blood_Counts %>% sapply(nrow) > 8000
+Blood_Counts <- Blood_Counts[keep]
+
+int <- Reduce(intersect, lapply(Blood_Counts, rownames))
+test_list <-  lapply(Blood_Counts, function(x)x[int,, drop = FALSE])
+
+test_df <- do.call(cbind, test_list)
+Z.Scores.All <- apply(test_df, 2, function(x) {
+        stats::qnorm(rank(x)/(nrow(test_df) + 1))
+})
+data(Pathways, package = "directPA")
+gene.pvalues <- apply(Z.Scores.All, 1, function(x) {
+  directPA::geneStats(x)
+})
+gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+pvalue2sided <- 2 * stats::pnorm(-abs(gene.zscores))
+sig.genes <- names(sort(pvalue2sided))[1:25]
+
+# Plotting Results
+GSE <- paste(CPOP2:::str_split_n(files[keep], "_", 2), sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 4)), sep = "_")
+Tissue <- sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 5))
+Tissue[Tissue == ""] <- "Kidney"
+anno_df <- data.frame(GSE, Tissue, row.names = paste("Dataset", 1:length(Tissue)))
+
+library(pheatmap)
+Z.Score.Significant <- Z.Scores.All[which(rownames(Z.Scores.All) %in% sig.genes),]
+colnames(Z.Score.Significant) <- rownames(anno_df)
+```
+
+
+```{r, fig.height=3, fig.width=3}
+pheatmap::pheatmap(Z.Score.Significant,
+         color = colorRampPalette(c("blue", "navy", "white", "firebrick3", "red"))(1500),
+         cellwidth = 10,
+         cellheight = 10,
+         angle_col = 315,
+         show_colnames = FALSE,
+         annotation = anno_df %>% dplyr::select(Tissue),
+         scale = "column")
+```
+Pathways
+```{r}
+library(msigdbr)
+library(fgsea)
+library(clusterProfiler)
+
+gene_list <- gene.zscores[which(abs(gene.zscores) > 2)]
+gene_list = sort(gene_list, decreasing = TRUE)
+
+library(org.Hs.eg.db)
+organism = "org.Hs.eg.db"
+gse <- gseGO(geneList=gene_list, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05,
+             verbose = TRUE, 
+             OrgDb = organism,
+             eps = 0,
+             pAdjustMethod = "none")
+
+library(enrichplot)
+dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+d <- gse@result %>%
+  mutate(Score = -log10(pvalue), Direction = ifelse(NES > 0, "Up-Regulated", "Down-Regulated"),
+         Description = str_wrap(gsub("_", " ", Description), width = 40)) %>%
+  top_n(abs(NES), n = 20) %>%
+  ggplot(aes(y = reorder(Description, Score), x = Score)) + geom_bar(stat = "identity", fill = "#3E9DB5") + 
+  theme_bw() + ylab("") + xlab("-log10 pvalue") + facet_wrap(.~Direction) +
+  labs(y = NULL, x = "-log10 P-Value") +
+  theme(axis.text.y = element_text(size = 12)) +
+  theme(axis.text.x = element_text(size = 12))
+
+stop()
+```
+
+Building a model across Datasets
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Tolerance/Normalised_Counts")
+files <- list.files(pattern = "Blood")
+Blood_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+  y %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene_Symbol) & !is.na(Gene_Symbol)) %>%
+    tibble::column_to_rownames("Gene_Symbol") 
+})
+
+keep <- Blood_Counts %>% sapply(nrow) > 8000
+Blood_Counts <- Blood_Counts[keep]
+int <- Reduce(intersect, lapply(Blood_Counts, rownames))
+Blood_Counts <- lapply(Blood_Counts, function(x)x[int,])
+Counts_t <- lapply(Blood_Counts, t)
+
+Blood_outcome <- lapply(Blood_Counts, function(x){
+  factor(ifelse(grepl("Control", colnames(x)), "Control", "AR"))
+})
+```
+
+```{r, message=FALSE,warning=FALSE}
+# j = i = 1
+# roc_Big <- cf_Big <- roc_MultiScale <- cf_MultiScale <- list()
+# for(j in seq_along(Counts_t)){ # j will be the dataset that we test on.
+#   print(paste("Starting Run", j, "/ 5"))
+#   Data_temp = Counts_t[-j]
+#   Condition_temp = Blood_outcome[-j]
+#   for(i in 2:length(Data_temp)){
+#     print(1:i)
+#     sig.genes <- PreProcess_Frank(x_list = Data_temp[1:i], y_list = Condition_temp[1:i], 
+#                                   contrast = "AR - Control", 
+#                                   nFeatures = 20, combinationMethod = "Stouffer")
+#     
+#     Data_pred = lapply(Counts_t, "[", , sig.genes)
+#     Data_temp = lapply(Data_temp, "[", , sig.genes)
+#     
+#     x_list <- lapply(Data_temp, as.matrix)[1:i]
+#     y_list <- lapply(Condition_temp, factor)[1:i]
+# 
+#     fCPOP_model <- Frankenstein_CPOP(x_list, y_list, sample_weights = TRUE, optimiseExponent = FALSE)
+#     pred <- predict_cpop2(fCPOP_model$models, newx = Data_pred[[j]])
+# 
+#     library(pROC)
+#     roc_MultiScale[[i]] <- roc(factor(Blood_outcome[[j]]), pred)
+#     cf_MultiScale[[i]] <- data.frame(Pred = pred, Truth = factor(Blood_outcome[[j]]))
+#   }
+#   roc_Big[[j]] <- roc_MultiScale
+#   cf_Big[[j]] <- cf_MultiScale
+# }
+# 
+# library(tidyverse)
+# library(plyr)
+# roc_scores1 <- lapply(roc_Big, function(x){
+#   x %>%
+#   map(~tibble(AUC = .x$auc)) %>%
+#   plyr::ldply() %>%
+#   mutate(Datasets = paste("Datasets", 2:4, sep = "_")) 
+# }) 
+# 
+# df <- do.call("rbind", roc_scores1)
+# df$Datasets <- ordered(df$Datasets, levels = roc_scores1[[1]]$Datasets)
+# df$Prediction_set <- sort(rep(GSE, 3))
+# 
+# df %>%
+#   ggplot(aes(x = Datasets, y = AUC, color = Prediction_set)) + geom_boxplot() + xlab("Datasets Added") + 
+#   theme_bw() + theme(axis.text.x = element_text(angle = 45, h = 1)) + geom_point() + geom_line(aes(group = Prediction_set))
+```
+
+Go predict Kidney datasets using only Kidney data and then the full model. 
+```{r}
+Tissue <- sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 5))
+Tissue[Tissue == ""] <- "Kidney"
+Kidney <- Tissue == "Kidney"
+
+Kidney_counts = Counts_t[Kidney]
+Kidney_outcome = Blood_outcome[Kidney]
+
+roc_Kidney <- list()
+for(i in seq_along(Kidney_counts)){
+  
+  model <- glmnet::cv.glmnet(Kidney_counts[[i]], Kidney_outcome[[i]], family = "binomial", alpha = 1)
+  pred <- predict(model, newx = Kidney_counts[[-i]])
+
+  library(pROC)
+  roc_Kidney[[i]] <- roc(factor(Kidney_outcome[[-i]]), pred)
+}
+
+# Let's predict the same datasets using all models.
+
+Kidney_idx <- which(Tissue == "Kidney")
+roc_AllKidney <- cf_AllKidney <- list()
+for(i in Kidney_idx){
+  sig.genes.all <- PreProcess_Frank(x_list = Counts_t[-i], y_list = Blood_outcome[-i], 
+                                  contrast = "AR - Control", 
+                                  nFeatures = 100, combinationMethod = "Stouffer")
+    
+  Data_temp = lapply(Counts_t, "[", , sig.genes.all)
+    
+  x_list <- lapply(Data_temp, as.matrix)[-i]
+  y_list <- lapply(Blood_outcome, factor)[-i]
+
+  fCPOP_model <- Frankenstein_CPOP(x_list, y_list, sample_weights = TRUE, optimiseExponent = FALSE)
+  pred <- predict_cpop2(fCPOP_model$models, newx = Data_temp[[i]])
+
+  library(pROC)
+  roc_AllKidney[[i]] <- roc(factor(Blood_outcome[[i]]), pred)
+  cf_AllKidney[[i]] <- performance_cpop2(fCPOP_model$models, newx = Data_temp[[i]], newy = Blood_outcome[[i]])
+}
+
+roc_AllKidney <- roc_AllKidney[!unlist(lapply(roc_AllKidney, is.null))]
+cf_AllKidney <- cf_AllKidney[!unlist(lapply(cf_AllKidney, is.null))]
+
+Dataset <- CPOP2:::str_split_n(files, "_", 2)
+Dataset <- Dataset[Kidney]
+Dataset <- janitor::make_clean_names(Dataset)
+
+Kidney_Performance <- unlist(lapply(roc_Kidney, function(x)as.numeric(x$auc)))
+names(Kidney_Performance) <- Dataset
+Kidney_Performance <- Kidney_Performance %>% 
+  enframe() %>%
+  mutate(Metric = "AUC", Model = "Kidney")
+
+Full_PerformanceKidney <- unlist(lapply(roc_AllKidney, function(x)as.numeric(x$auc)))
+names(Full_PerformanceKidney) <- Dataset
+Full_PerformanceKidney <- Full_PerformanceKidney %>% 
+  enframe() %>%
+  mutate(Metric = "AUC", Model = "All")
+
+perf_Kidney <- rbind(Kidney_Performance, Full_PerformanceKidney)
+perf_Kidney
+```
+
+
+Go predict Kidney datasets using only heart data. 
+```{r}
+Tissue <- sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 5))
+Tissue[Tissue == ""] <- "Kidney"
+Liver <- Tissue == "Liver"
+
+Liver_counts = Counts_t[Liver]
+Liver_outcome = Blood_outcome[Liver]
+
+idx <- which(!is.na(colSums(Liver_counts[[1]])))
+Liver_counts <- lapply(Liver_counts, function(x)x[,idx])
+
+roc_Liver <- list()
+for(i in seq_along(Liver_counts)){
+  print(i)
+  model <- glmnet::cv.glmnet(do.call(rbind, Liver_counts[-i]), unlist(Liver_outcome[-i]), 
+                             family = "binomial", alpha = 1)
+  pred <- predict(model, newx = Liver_counts[[i]])
+
+  library(pROC)
+  roc_Liver[[i]] <- roc(factor(Liver_outcome[[i]]), pred)
+}
+```
+
+Let's predict the same datasets using all models.
+```{r}
+Liver_idx <- which(Tissue == "Liver")
+roc_All <- cf_All <- list()
+for(i in Liver_idx){
+  sig.genes.all <- PreProcess_Frank(x_list = Counts_t[-i], y_list = Blood_outcome[-i], 
+                                  contrast = "AR - Control", 
+                                  nFeatures = 200, combinationMethod = "Stouffer")
+    
+  Data_temp = lapply(Counts_t, "[", , sig.genes.all)
+    
+  x_list <- lapply(Data_temp, as.matrix)[-i]
+  y_list <- lapply(Blood_outcome, factor)[-i]
+
+  fCPOP_model <- Frankenstein_CPOP(x_list, y_list, sample_weights = TRUE, optimiseExponent = FALSE)
+  pred <- predict_cpop2(fCPOP_model$models, newx = Data_temp[[i]])
+
+  library(pROC)
+  roc_All[[i]] <- roc(factor(Blood_outcome[[i]]), pred)
+  cf_All[[i]] <- performance_cpop2(fCPOP_model$models, newx = Data_temp[[i]], newy = Blood_outcome[[i]])
+}
+
+roc_All <- roc_All[!unlist(lapply(roc_All, is.null))]
+cf_All <- cf_All[!unlist(lapply(cf_All, is.null))]
+```
+
+Let's merge the two
+```{r}
+Dataset <- CPOP2:::str_split_n(files[Liver], "_", 2)
+
+Liver_Performance <- unlist(lapply(roc_Liver, function(x)as.numeric(x$auc)))
+names(Liver_Performance) <- Dataset
+Liver_Performance <- Liver_Performance %>% 
+  enframe() %>%
+  mutate(Metric = "AUC", Model = "Liver")
+
+Full_Performance <- unlist(lapply(roc_All, function(x)as.numeric(x$auc)))
+names(Full_Performance) <- Dataset
+Full_Performance <- Full_Performance %>% 
+  enframe() %>%
+  mutate(Metric = "AUC", Model = "All")
+
+perf_Liver <- rbind(Liver_Performance, Full_Performance)
+perf_Liver %>%
+  ggplot(aes(x = reorder(Model, value), y = value, fill = Model)) + geom_boxplot() + theme_bw() +
+  ylab("AUC") + xlab("Model") + geom_point() + geom_line(aes(group = name)) +
+  ggthemes::scale_fill_tableau()
+```
+
+
+```{r}
+perf_Kidney <- perf_Kidney %>%
+  mutate(Organ = "Kidney")
+perf_Liver <- perf_Liver %>%
+  mutate(Organ = "Liver")
+
+perf_df <- rbind(perf_Kidney, perf_Liver)
+perf_df %>%
+  mutate(Group = paste(Model, Organ)) %>%
+  ggplot(aes(x = reorder(Group, value), y = value, fill = Model)) + geom_boxplot() + theme_bw() + ggthemes::scale_fill_tableau(direction = -1) + 
+  geom_line(aes(group = name), alpha = 0.5) + geom_point(alpha = 0.2) + ylab("AUC")
+```
+
+
+
+```{r}
+ggplot(perf_df, aes(x = Organ, y = value)) +
+  geom_boxplot(
+  aes(fill = Model), width = 0.5, size = 0.4,
+  position = position_dodge(0.8)
+  ) + theme_bw() +
+  geom_dotplot(
+    aes(fill = Model), trim = TRUE,
+    binaxis='y', stackdir='center', dotsize = 0.8,
+    position = position_dodge(0.8)
+  ) + ggthemes::scale_fill_tableau(direction = -1) + ylab("AUC") +
+  xlab("Testing Organs")
+```
+
+```{r}
+data_foo <- perf_df %>% mutate(new_x = factor(interaction(Organ,Model), 
+                                                 levels = c('Heart.Heart','Heart.All','Kidney.Kidney',
+                                                            'Kidney.All', "Liver.Liver", "Liver.All")))
+
+ggplot(data_foo, aes(x = new_x, y = value, fill = as.character(Model))) + 
+  geom_boxplot() + theme_bw() + geom_line(aes(group = name), alpha = 0.3) + 
+  scale_fill_manual(values = c("#ffa600", "#ff6361", "#0087c6", "#7a5195"), name = "Training\nDatasets") +
+  geom_point(aes(group = name), shape = 21, color = 'black') + theme(axis.text.x = element_blank()) + xlab("") +
+  ylab("AUC")
+```
+
+```{r}
+sig.genes.all <- PreProcess_Frank(x_list = Counts_t, y_list = Blood_outcome, 
+                                  contrast = "AR - Control", 
+                                  nFeatures = 100, combinationMethod = "Stouffer")
+Data_temp = lapply(Counts_t, "[", , sig.genes.all)
+
+fCPOP_model <- Frankenstein_CPOP(Data_temp, Blood_outcome, sample_weights = TRUE, optimiseExponent = FALSE)
+
+CPOP_coefPlot(fCPOP_model)
+
+CPOP_simplenetworkPlot(fCPOP_model)
+
+network_df <- as.matrix(glmnet::coef.glmnet(fCPOP_model$model, s = "lambda.min")) |>
+  data.frame() |>
+  tibble::rownames_to_column("Features") |>
+  dplyr::filter(lambda.min != 0) |>
+  dplyr::filter(Features != "(Intercept)") |>
+  dplyr::top_n(lambda.min, n = 10) |>
+  arrange(desc(abs(lambda.min))) |>
+  tidyr::separate(col = "Features",
+                  into = c("from", "to"),
+                  sep = "--")
+  
+chordDiagram(network_df, directional = 1, direction.type = "arrows")
+```
+
+Let's make a combined model that incorperates information from blood and PBMC. 
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Tolerance/Normalised_Counts")
+files <- list.files()
+Blood_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+  y %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene_Symbol) & !is.na(Gene_Symbol)) %>%
+    tibble::column_to_rownames("Gene_Symbol") 
+})
+
+keep <- Blood_Counts %>% sapply(nrow) > 8000
+Blood_Counts <- Blood_Counts[keep]
+int <- Reduce(intersect, lapply(Blood_Counts, rownames))
+Blood_Counts <- lapply(Blood_Counts, function(x)x[int,])
+Counts_t <- lapply(Blood_Counts, t)
+
+Blood_outcome <- lapply(Blood_Counts, function(x){
+  factor(ifelse(grepl("Control", colnames(x)), "Control", "AR"))
+})
+
+for(i in seq_along(Counts_t)){
+  sig.genes.all <- PreProcess_Frank(x_list = Counts_t[-i], y_list = Blood_outcome[-i], 
+                                  contrast = "AR - Control", 
+                                  nFeatures = 200, combinationMethod = "Stouffer")
+    
+  Data_temp = lapply(Counts_t, "[", , sig.genes.all)
+    
+  x_list <- lapply(Data_temp, as.matrix)[-i]
+  y_list <- lapply(Blood_outcome, factor)[-i]
+
+  fCPOP_model <- Frankenstein_CPOP(x_list, y_list, sample_weights = TRUE, optimiseExponent = FALSE)
+  pred <- predict_cpop2(fCPOP_model$models, newx = Data_temp[[i]])
+
+  library(pROC)
+  roc_All[[i]] <- roc(factor(Blood_outcome[[i]]), pred)
+  cf_All[[i]] <- performance_cpop2(fCPOP_model$models, newx = Data_temp[[i]], newy = Blood_outcome[[i]])
+}
+
+idx2 <- which(CPOP2:::str_split_n(files[keep], "_", 2) %in% toupper(data_foo$name))
+
+
+Full_Performance <- unlist(lapply(roc_All[idx2], function(x)as.numeric(x$auc)))
+names(Full_Performance) <- CPOP2:::str_split_n(names(Full_Performance), "_", 2)
+Full_Performance <- Full_Performance %>% 
+  enframe() %>%
+  mutate(Metric = "AUC", Model = "Comb")
+
+Full_Performance$Organ <- CPOP2:::str_split_n(names(Full_Performance), "_", 2)
+rbind(perf_df, Full_Performance %>% mutate(Organ = "All")) %>%
+  mutate(name = toupper(name)) %>%
+  mutate(Group = paste(Model, Organ)) %>%
+  ggplot(aes(x = reorder(Group, value), y = value, fill = Model)) + geom_boxplot() + theme_bw() +
+  ggthemes::scale_fill_tableau(direction = -1) + 
+  geom_line(aes(group = name), alpha = 0.5) + geom_point(alpha = 0.2) + ylab("AUC")
+```
+
+

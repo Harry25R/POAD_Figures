@@ -1,0 +1,360 @@
+---
+title: "Integration of in vivo data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE}
+suppressPackageStartupMessages({
+  library(SingleCellExperiment)
+  library(DelayedMatrixStats)
+  library(Seurat)
+  library(ggplot2)
+  library(ggthemes)
+  library(scater)
+  library(scReClassify)
+  library(RColorBrewer)
+  library(dplyr)
+  library(parallel)
+})
+
+## plan("multiprocess", workers = 10)
+## plan()
+## options(future.globals.maxSize = Inf)
+## Extract signature genes
+goi_mat = readRDS("~/Desktop/hani_df.Rds")
+goi_mat2 = goi_mat[is.infinite(goi_mat$z),]
+goi_mat = goi_mat[!is.infinite(goi_mat$z),]
+goi_mat = goi_mat[order(goi_mat$z, decreasing = TRUE),]
+goi_mat$gene[1:50]
+
+goi_rank = rank(goi_mat$p)
+names(goi_rank) = goi_mat$gene
+
+idx_gene = goi_mat$p < 1*10^-35 
+goi = goi_mat$gene[idx_gene]
+length(goi)
+
+p_cut = c(1*10^-10)
+idx_gene = goi_mat$p < p_cut & goi_mat$z > 0
+goi1 = goi_mat$gene[idx_gene]
+idx_gene = goi_mat$p < p_cut & goi_mat$z < 0
+goi2 = goi_mat$gene[idx_gene]
+goi = c(goi1, goi2)
+```
+
+```{r}
+## Load dtasets
+f = list.files("~/Desktop/For_Hani")
+datasetName = gsub(".Rds", "", f)
+
+seuList = lapply(f, function(x) readRDS(paste0("~/Desktop/For_Hani/", x)))
+names(seuList) = datasetName
+datasetSub = lapply(names(seuList), function(x) {
+  if (length(seuList[[x]]) == 1) {
+    return(x)
+  } else {
+    return(paste0(x, "-batch", 1:length(seuList[[x]])))
+  }
+})
+datasetNames = unlist(datasetSub)
+seuList = unlist(seuList, recursive = FALSE)
+names(seuList) = datasetNames
+seuList = lapply(datasetNames, function(x) {
+  seu = seuList[[x]]
+  seu$batch = x
+  return(seu)
+})
+
+batchID = unlist(lapply(seuList, function(x) x$batch))
+
+geneIdx = Reduce(intersect, lapply(seuList, function(x) toupper(rownames(x@assays$RNA@counts))))
+names(seuList) = paste0("Dataset", 1:length(seuList))
+  
+seuList_tmp <- mclapply(X = names(seuList), FUN = function(x) {
+  print(x)
+  seu = seuList[[x]]
+  counts = seu@assays$RNA@counts
+  meta.data = seu@meta.data
+  seu <- Seurat::CreateSeuratObject(counts = counts, meta.data = as.data.frame(meta.data)) 
+  seu = seu[geneIdx,]
+  seu<- ScaleData(seu)
+  seu<- NormalizeData(seu,
+                      normalization.method = "LogNormalize",
+                      scale.factor = 10000)
+  seu<- FindVariableFeatures(seu, features = 2000)
+  seu<- RunPCA(seu, npcs = 50, return.model = TRUE)
+  return(seu)
+  
+}, mc.cores = length(seuList))
+
+features_invivo <- SelectIntegrationFeatures(object.list = seuList_tmp, nfeatures = 2000)
+
+seuList2 <- FindIntegrationAnchors(object.list = seuList_tmp, 
+                                   anchor.features = features_invivo, 
+                                   reduction = "rpca",
+                                   dims = 1:30,
+                                   k.anchor = 5)
+seuList2 <- IntegrateData(anchorset = seuList2, k.weight = 100)
+DefaultAssay(seuList2) <- "integrated"
+seuList2 <- ScaleData(seuList2, verbose = FALSE)
+seuList2 <- RunPCA(seuList2, npcs=50, return.model = TRUE) #50,50
+seuList2 <- RunUMAP(seuList2, dims = 1:50, reduction = "pca", return.model = TRUE)
+seuList2$batch = batchID
+seuList2$batch2 = sapply(strsplit(batchID, "-"), "[[", 1)
+```
+
+```{r}
+lapply(c(5,10,20), function(k.anchor) {
+  print(k.anchor)
+  seuList2 <- FindIntegrationAnchors(object.list = seuList_tmp, 
+                                     anchor.features = features_invivo, 
+                                     reduction = "rpca",
+                                     dims = 1:30,
+                                     k.anchor = k.anchor)
+  seuList2 <- IntegrateData(anchorset = seuList2, k.weight = 100)
+  DefaultAssay(seuList2) <- "integrated"
+  seuList2 <- ScaleData(seuList2, verbose = FALSE)
+  seuList2 <- RunPCA(seuList2, npcs=50, return.model = TRUE) #50,50
+  seuList2 <- RunUMAP(seuList2, dims = 1:50, reduction = "pca", return.model = TRUE)
+  seuList2 <- RunTSNE(seuList2, dims = 1:50, return.model = TRUE, check_duplicates = FALSE)
+  
+  df = Embeddings(seuList2, "tsne")
+  
+  # write.table(df, file = paste0("df_k.anchor_", k.anchor, ".csv"), sep = "")
+})
+```
+
+```{r}
+# seuList2 = readRDS("test.RDS")
+
+# df = read.delim(file = paste0("df_k.anchor_5.csv"), sep = "")
+tmp = strsplit(df$csv.tSNE_2., "csv")
+df$DM1 = sapply(tmp, "[[", 2)
+df$DM2 = sapply(tmp, "[[", 3)
+
+dftoplot = data.frame(
+  tSNE_1 = df$DM1,
+  tSNE_2 = df$DM2
+)
+rownames(dftoplot) = df[,1]
+dftoplot$tSNE_1 = as.numeric(dftoplot$tSNE_1)
+dftoplot$tSNE_2 = as.numeric(dftoplot$tSNE_2)
+dftoplot = as.matrix(dftoplot)
+
+seuList2[['tsne']] <- CreateDimReducObject(embeddings = dftoplot, key = 'Tsne', assay = 'RNA')
+
+# saveRDS(seuList2, file = "test.RDS")
+```
+
+```{r}
+# seuList2 = readRDS("test.RDS")
+
+o = intersect(rownames(seuList2), goi)
+signatureMat = seuList2[o,]
+signatureMat2 = colMeans2(signatureMat@assays$integrated@scale.data)
+seuList2$signatureGene = signatureMat2
+
+major1 = seuList2$predicted.ann_level_2
+major1[is.na(major1)] = "other"
+major2 = seuList2$predicted.annotation.l1
+major2[is.na(major2)] = "other"
+major3 = seuList2$predicted.celltype.l1
+major3[is.na(major3)] = "other"
+
+major = 1:ncol(seuList2)
+major[major1 != "other"] = major1[major1 != "other"]
+major[major2 != "other"] = major2[major2 != "other"]
+major[major3 != "other"] = major3[major3 != "other"]
+
+major = gsub(" ", ".", major)
+major = gsub("/", ".", major)
+
+major[major %in% c("Mast", "Lymphoid", "Myeloid")] = "Immune"
+major[major %in% c("Proximal.Tubule", "Connecting.Tubule", "Distal.Convoluted.Tubule", 
+                         "Ascending.Thin.Limb", "Descending.Thin.Limb","Thick.Ascending.Limb",
+                         "Papillary.Tip.Epithelial", "Parietal.Epithelial", "Intercalated",
+                         "Pericyte", "Podocyte", "Principal")] = "Kidney"
+major[major %in% c("Alveolar.epithelium", "Airway.epithelium")] = "Lung"
+major[major %in% c("Smooth.muscle", "Smooth.Muscle", "Vascular.Smooth.Muscle...Pericyte",
+                         "Fibroblast.lineage", "Mesothelium", "Mesothelial",
+                         "Lymphatic.Endothelial", "Lymphatic.EC", "Endothelial",
+                         "Blood.vessels", "Fibroblast", "Adipocyte")] = "Stromal"
+major[major %in% c("Cardiomyocyte")] = "Heart"
+major[major %in% c("Schwann")] = "Neuronal"
+
+minor1 = seuList2$predicted.ann_level_3
+minor1[is.na(minor1)] = "other"
+minor2 = seuList2$predicted.annotation.l2
+minor2[is.na(minor2)] = "other"
+minor3 = seuList2$predicted.celltype.l2
+minor3[is.na(minor3)] = "other"
+
+minor = 1:ncol(seuList2)
+minor[minor1 != "other"] = minor1[minor1 != "other"]
+minor[minor2 != "other"] = minor2[minor2 != "other"]
+minor[minor3 != "other"] = minor3[minor3 != "other"]
+
+minor = gsub(" ", ".", minor)
+minor = gsub("/", ".", minor)
+
+minor[minor %in% c("B")] = "B.cell.lineage"
+minor[minor %in% c("T", "Natural.Killer.T")] = "T.cell.lineage"
+minor[minor %in% c("Afferent...Efferent.Arteriole.Endothelial", "Arterial.Endothelial", "EC.arterial", 
+                  "EC.capillary", "EC.venous", "Venous.Endothelial", "Capillary.Endothelial")] = "Endothelial-Vascular"
+minor[minor %in% c("Glomerular.Capillary.Endothelial", "Ascending.Vasa.Recta.Endothelial",
+                  "Descending.Vasa.Recta.Endothelial.","Peritubular.Capilary.Endothelial.")] = "Endothelial-Kidney"
+minor[minor %in% c("Lymphatic.EC.differentiating", "Lymphatic.EC.mature", "Lymphatic.Endothelial")] = "Endothelial-Lymphatic"
+minor[minor %in% c("Macrophages", "M2.Macrophage")] = "Macrophage"
+minor[minor %in% c("Monocyte.cDC", "Monocyte.derived","Monocyte-derived", "Monocytes", "Non.classical.monocyte")] = "Monocyte"
+minor[minor %in% c("AT1", "AT2")] = "AT"
+minor[minor %in% c("Innate.lymphoid.cell.NK")] = "NK"
+minor[minor %in% c("SM.activated.stress.response")] = "Smooth.Muscle"
+minor[minor %in% c("Inner.Medullary.Collecting.Duct",
+                  "Outer.Medullary.Collecting.Duct.Intercalated.Type.A")] = "Collecting duct-Medullary"
+minor[minor %in% c("Cortical.Collecting.Duct.Intercalated.Type.A",
+                  "Cortical.Collecting.Duct.Principal")] = "Collecting duct-Cortical"
+minor[minor %in% c("Connecting.Tubule",
+                  "Distal.Convoluted.Tubule")] = "Tubule"
+minor[minor %in% c("Cortical.Thick.Ascending.Limb",
+                  "Ascending.Thin.Limb",
+                  "Medullary.Thick.Ascending.Limb")] = "Ascending limb"
+minor[minor %in% c("Descending.Thin.Limb.Type.1",
+                  "Descending.Thin.Limb.Type.2","Descending.Thin.Limb.Type.3")] = "Descending limb"
+minor[minor %in% c("Proximal.Tubule.Epithelial.Segment.1",
+                  "Proximal.Tubule.Epithelial.Segment.2",
+                  "Proximal.Tubule.Epithelial.Segment.3")] = "Proximal.Tubule.Epithelial.Segment"
+minor[minor %in% c("Intercalated.Type.B", "Proximal.Tubule.Epithelial.Segment", "Papillary.Tip.Epithelial", "Parietal.Epithelial")] = "Epithelial-Kidney"
+minor[minor %in% c("Dendritic.cells", "Classical.Dendritic")] = "Dendritic cells"
+minor[minor %in% c("Fibroblasts", "Medullary.Fibroblast", "Myofibroblasts", "Fibromyocytes")] = "Fibroblast"
+minor[minor %in% c("Mast.cells")] = "Mast"
+minor[minor %in% c("Schwann...Neural")] = "Neuronal"
+minor[minor %in% c("Mesangial", "Vascular.Smooth.Muscle...Pericyte", "Dendritic cells",
+                               "Cortical.Vascular.Smooth.Muscle...Pericyte",
+                               "Endocardial", "Adipocyte", "Pericyte")] = "Stromal"
+
+
+# fix mislabels
+major[minor == "Ventricular.Cardiomycoyte"] = "Heart"
+major[minor %in% c("AT", "Basal", "Secretory")] = "Lung"
+major[minor %in% c("Collecting duct/tubule", "Ascending limb", "Collecting duct-Medullary", "Descending limb", "Epithelial-Kidney", "Macula.Densa", "Podocyte", "Tubule")] = "Kidney"
+major[minor %in% c("Endothelial-Kidney", "Endothelial-Lymphatic", "Endothelial-Vascular", "Mesothelial", "Fibroblast", "Smooth.Muscle", "Stromal")] = "Stromal"
+major[minor == "Neuronal"] = "Neuronal"
+major[minor %in% c("Mast", "Monocyte", "B.cell.lineage", "Macrophage", "NK", "T.cell.lineage")] = "Immune"
+
+
+seuList2$major = major
+seuList2$minor = minor
+
+table(seuList2$minor, seuList2$major)
+
+scPalette <- function(n) {
+    colorSpace <- c('#E41A1C','#1B9E77','#9C9CA0','#984EA3','#0000FF','#F29403','#F781BF',"#3F2356",'#377EB8','#377EB8','#A65628','#54B0E4','#222F75', "#779F25")
+    if (n <= length(colorSpace)) {
+        colors <- colorSpace[1:n]
+    } else {
+        colors <- grDevices::colorRampPalette(colorSpace)(n)
+    }
+    return(colors)
+}
+
+cty_cols = RColorBrewer::brewer.pal(8, "Set1")
+#cty_cols = c("#33658A", "#86BBD8", "#758E4F", "#F6AE2D", "#F26419")
+cty_cols = colorRampPalette(cty_cols)(length(unique(seuList2$major)))
+#cty_cols = scPalette(length(unique(seuList2$major)))
+names(cty_cols) = unique(seuList2$major)
+
+cty_cols2 = RColorBrewer::brewer.pal(12, "Paired")
+cty_cols2 = colorRampPalette(cty_cols2)(length(unique(seuList2$minor)))
+#cty_cols2 = scPalette(length(unique(seuList2$minor)))
+names(cty_cols2) = unique(seuList2$minor)
+
+batch_cols = RColorBrewer::brewer.pal(12, "Set1")
+batch_cols = colorRampPalette(batch_cols)(length(unique(seuList2$batch2)))
+#batch_cols = scPalette(length(unique(seuList2$batch2)))
+names(batch_cols) = unique(seuList2$batch2)
+
+condition_cols = RColorBrewer::brewer.pal(12, "Spectral")[c(2,10)]
+condition_cols = colorRampPalette(condition_cols)(length(unique(seuList2$Condition)))
+#batch_cols = scPalette(length(unique(seuList2$batch2)))
+names(condition_cols) = unique(seuList2$Condition)
+
+p1 = DimPlot(seuList2, reduction = "tsne", group.by = "major", cols=cty_cols)
+p2 = DimPlot(seuList2, reduction = "tsne", group.by = "minor", cols=cty_cols2)
+p3 = DimPlot(seuList2, reduction = "tsne", group.by = "Condition", cols=condition_cols)
+p4 = DimPlot(seuList2, reduction = "tsne", group.by = "batch2", cols=batch_cols)
+#p6 = Nebulosa::plot_density(seuList2, "signatureGene")
+p5 = FeaturePlot(seuList2, reduction = "tsne", features = c("signatureGene"))
+
+p1+p2+p3+p4+p5
+
+p1 %>% ggsave(filename = "UMAP_major.pdf", width = 6, height = 5)
+p2 %>% ggsave(filename = "UMAP_minor.pdf", width = 10, height = 5)
+p3 %>% ggsave(filename = "UMAP_condition.pdf", width = 6, height = 5)
+p4 %>% ggsave(filename = "UMAP_batch.pdf", width = 6, height = 5)
+p5 %>% ggsave(filename = "UMAP_signature.pdf", width = 6, height = 5)
+
+Seurat::Idents(seuList2) = "major"
+p1 = VlnPlot(seuList2, features = "signatureGene", split.by = "major", cols = cty_cols, pt.size = 0, sort = "increasing") + NoLegend()
+Seurat::Idents(seuList2) = "minor"
+p2 = VlnPlot(seuList2, features = "signatureGene", split.by = "minor", cols = cty_cols2, pt.size = 0, sort = "increasing") + NoLegend() 
+p1 + p2
+
+p1 %>% ggsave(filename = "violin_signature_major.pdf", width = 5, height = 5)
+p2 %>% ggsave(filename = "violin_signature_minor.pdf", width = 15, height = 5)
+
+# save(cty_cols, cty_cols2, condition_cols, batch_cols, file = "my_col.RData")
+```
+
+```{r fig.height=3, fig.width=10}
+seu_tmp = seuList2
+
+pList = lapply(c(5,10,20), function(k.anchor) {
+  
+  df = read.delim(file = paste0("df_k.anchor_", k.anchor, ".csv"), sep = "")
+  tmp = strsplit(df$csv.tSNE_2., "csv")
+  df$DM1 = sapply(tmp, "[[", 2)
+  df$DM2 = sapply(tmp, "[[", 3)
+  
+  dftoplot = data.frame(
+    tSNE_1 = df$DM1,
+    tSNE_2 = df$DM2
+  )
+  rownames(dftoplot) = df[,1]
+  dftoplot$tSNE_1 = as.numeric(dftoplot$tSNE_1)
+  dftoplot$tSNE_2 = as.numeric(dftoplot$tSNE_2)
+  dftoplot = as.matrix(dftoplot)
+  
+  seu_tmp[['tsne.tmp']] <- CreateDimReducObject(embeddings = dftoplot, key = 'TsneRe_', assay = 'RNA')
+
+  rm(df)
+  gc()
+  
+  set.seed(1)
+  dftoplot =dftoplot[sample(1:nrow(dftoplot), nrow(dftoplot)),]
+  
+  ## p1 = ggplot(dftoplot, aes(dm1, dm2, col = major)) + 
+  ##   ggrastr::geom_point_rast() + 
+  ##   theme_classic() + 
+  ##   scale_color_manual(values = cty_cols) + ggtitle(k.anchor)
+  ## p2 = ggplot(dftoplot, aes(dm1, dm2, col = minor)) + 
+  ##   ggrastr::geom_point_rast() + 
+  ##   theme_classic() + 
+  ##   scale_color_manual(values = cty_cols2) + ggtitle(k.anchor)
+  ## p = patchwork::wrap_plots(list(p1,p2), ncol = 2)
+  
+  p1 = DimPlot(seu_tmp, reduction = "tsne.tmp", group.by = "major", cols=cty_cols)
+  p2 = DimPlot(seu_tmp, reduction = "tsne.tmp", group.by = "minor", cols=cty_cols2)
+  p = patchwork::wrap_plots(list(p1,p2), ncol = 2)
+  return(p)
+  
+  
+})
+
+ptosave = patchwork::wrap_plots(pList, ncol = 1) 
+ptosave %>% ggsave(filename = "test_UMAP.pdf", width = 25, height = 30)
+```
+

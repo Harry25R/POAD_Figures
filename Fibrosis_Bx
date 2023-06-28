@@ -1,0 +1,381 @@
+---
+title: "Fibrosis_Biopsy"
+author: "Harry Robertson"
+date: '2022-12-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(directPA)
+library(ggplot2)
+library(dplyr)
+```
+
+
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Fibrosis/Processed_Datasets")
+files <- list.files(pattern = "_Tx")
+Fibrosis_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+  y %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene.Symbol) & !is.na(Gene.Symbol)) %>%
+    tibble::column_to_rownames("Gene.Symbol") %>%
+    dplyr::select(t)
+})
+
+keep <- Fibrosis_Counts %>% sapply(nrow) > 10000
+Fibrosis_Counts <- Fibrosis_Counts[keep]
+
+int <- Reduce(intersect, lapply(Fibrosis_Counts, rownames))
+test_list <-  lapply(Fibrosis_Counts, function(x)x[int,, drop = FALSE])
+
+test_df <- do.call(cbind, test_list)
+Z.Scores.All <- apply(test_df, 2, function(x) {
+        stats::qnorm(rank(x)/(nrow(test_df) + 1))
+})
+data(Pathways, package = "directPA")
+gene.pvalues <- apply(Z.Scores.All, 1, function(x) {
+  directPA::geneStats(x)
+})
+gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+pvalue2sided <- 2 * stats::pnorm(-abs(gene.zscores))
+sig.genes <- names(sort(pvalue2sided))[1:50]
+names(pvalue2sided[pvalue2sided < 1*10^-7])
+
+# Plotting Results
+GSE <- paste(CPOP2:::str_split_n(files[keep], "_", 2), sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 4)), sep = "_")
+Tissue <- sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 5))
+Tissue[Tissue == ""] <- "Kidney"
+anno_df <- data.frame(GSE, Tissue, row.names = paste("Dataset", 1:length(Tissue)))
+annotation_colors <- list(
+  Tissue = c("Kidney" = "#E59F95", "Liver" = "#83C9D4", "Lung" = "#C4A9CE")
+)
+
+library(pheatmap)
+Z.Score.Significant <- Z.Scores.All[which(rownames(Z.Scores.All) %in% sig.genes),]
+colnames(Z.Score.Significant) <- rownames(anno_df)
+
+```
+
+
+```{r, fig.height=8.5, fig.width=5.5}
+a1 <- pheatmap::pheatmap(Z.Score.Significant,
+         color = colorRampPalette(c("blue", "navy", "white", "firebrick3", "red"))(1500),
+         cellwidth = 15,
+         cellheight = 10,
+         angle_col = 315,
+         annotation_col = anno_df %>% dplyr::select(Tissue),
+         annotation_colors = annotation_colors,
+         show_colnames = FALSE,
+         legend = TRUE,
+         legend_position = "left")
+stop()
+```
+
+Pathways
+```{r}
+library(msigdbr)
+library(fgsea)
+library(clusterProfiler)
+
+gene_list <- gene.zscores[which(abs(gene.zscores) > 2)]
+gene_list = sort(gene_list, decreasing = TRUE)
+
+library(org.Hs.eg.db)
+organism = "org.Hs.eg.db"
+gse <- gseGO(geneList=gene_list, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05,
+             verbose = TRUE, 
+             OrgDb = organism,
+             eps = 0,
+             pAdjustMethod = "none")
+
+gse@result %>%
+  mutate(Score = -log10(pvalue), Direction = ifelse(NES > 0, "Up-Regulated", "Down-Regulated")) %>%
+  top_n(Score, n = 25) %>%
+  ggplot(aes(y = reorder(Description, Score), x = Score)) + geom_point(size = 4) + theme_bw() + ylab("") +
+  xlab("-log10 pvalue") + facet_wrap(.~Direction)
+```
+
+Native Vs Tx
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Fibrosis/Processed_Datasets/")
+
+names <-list.files()
+list_tStats <- lapply(list.files(), read.csv)
+list_tStats <- lapply(list_tStats, function(x){
+  x %>%
+    dplyr::select(Gene.Symbol, t)
+})
+
+# Pull everything into one clean dataframe
+list_tStats <- Reduce(function(x, y) merge(x, y, by = "Gene.Symbol", all = TRUE), list_tStats)
+list_tStats <- list_tStats[which(!duplicated(list_tStats$Gene.Symbol) & !is.na(list_tStats$Gene.Symbol)), ]
+list_tStats <- list_tStats[-c(1:3),] # These genes make no sense
+rownames(list_tStats) <- NULL
+
+library(tibble)
+list_tStats <- list_tStats %>%
+  column_to_rownames(var = "Gene.Symbol") %>%
+  na.omit()
+
+# Annotating dataframe
+library(CPOP2)
+GSE <- CPOP2:::str_split_n(names, "_", 2)
+OrganTx <- CPOP2:::str_split_n(names, "_", 5)
+TxType <- sub(".csv", "", CPOP2:::str_split_n(names, "_", 6))
+
+anno_df <- data.frame(OrganTx, TxType)
+
+# Seperating Native and Tx
+list_tStats_Tx <- list_tStats[,which(TxType == "Tx")]
+list_tStats_Native <- list_tStats[,which(TxType != "Tx")]
+
+# Run directPA
+library(directPA)
+library(PhosR)
+data(Pathways)
+
+Z.Scores.All <- apply(list_tStats_Tx, 2, function(x){qnorm(rank(x)/(nrow(list_tStats_Tx)+1))})
+gene.pvalues <- apply(Z.Scores.All, 1, function(x){geneStats(x)})
+gene.zscores_Tx <- qnorm(gene.pvalues, lower.tail = FALSE) %>%
+  data.frame()
+
+Z.Scores.All <- apply(list_tStats_Native, 2, function(x){qnorm(rank(x)/(nrow(list_tStats_Native)+1))})
+gene.pvalues <- apply(Z.Scores.All, 1, function(x){geneStats(x)})
+gene.zscores_Native <- qnorm(gene.pvalues, lower.tail = FALSE) %>%
+  data.frame()
+
+all(rownames(gene.zscores_Tx) == rownames(gene.zscores_Native))
+df_zscore <- cbind(gene.zscores_Tx, gene.zscores_Native)
+colnames(df_zscore) <- c("Tx", "Native")
+
+# Plot Results
+library(plotly)
+data(Pathways)
+dPA <- directPA(df_zscore, direction = pi/4, annotation = Pathways.reactome, visualize = TRUE, 
+                        ylab = "Native Organ Fibrosis", 
+                        xlab = "Transplant Organ\nFibrosis")
+```
+
+
+```{r}
+myDirectExplorer2d <- function (Tc, annotation = NULL, gene.method = "OSP", path.method = "Stouffer", 
+    top = 10, nd = 8, ...) 
+{
+    directionCode <- c("++", "+*", "+-", "*-", "--", "-*", "-+", 
+        "*+")
+    gene.tab <- matrix(NA, nrow(Tc), nd)
+    rownames(gene.tab) <- rownames(Tc)
+    if (nd != 8) {
+        colnames(gene.tab) <- directionCode[c(1, 3, 5, 7)]
+    }
+    else {
+        colnames(gene.tab) <- directionCode
+    }
+    path.tab <- NULL
+    if (!is.null(annotation)) {
+        path.tab <- matrix(NA, length(annotation), nd + 1)
+        rownames(path.tab) <- names(annotation)
+        if (nd != 8) {
+            colnames(path.tab) <- c("size", directionCode[c(1, 
+                3, 5, 7)])
+        }
+        else {
+            colnames(path.tab) <- c("size", directionCode)
+        }
+    }
+    ds <- c()
+    if (nd != 8) {
+        ds <- c(0, 2, 4, 6)
+    }
+    else {
+        ds <- 0:7
+    }
+    count <- 0
+    for (i in ds) {
+        count <- count + 1
+        Tc.zscores <- apply(Tc, 2, function(x) {
+            qnorm(rank(x)/(nrow(Tc) + 1))
+        })
+        Tc.rotated <- rotate2d(Tc.zscores, pi/4 * i)
+        gene.pvalues <- apply(Tc.rotated, 1, geneStats, gene.method)
+        gene.tab[, count] <- gene.pvalues
+        if (!is.null(annotation)) {
+            gene.zscores <- qnorm(gene.pvalues, lower.tail = FALSE)
+            gst <- t(sapply(annotation, pathwayStats, gene.zscores, 
+                minSize = 5, path.method))
+            if (i == 0) {
+                path.tab[, 1] <- unlist(gst[, "size"])
+            }
+            path.tab[, (count + 1)] <- unlist(gst[, "pvalue"])
+        }
+    }
+    plot(Tc, col = "gray", pch = 16, asp = 1,...)
+    abline(h = 0, v = 0, col = "gold", lty = 2)
+    abline(a = 0, b = 1, lty = 2, col = "darkgreen")
+    color <- rainbow(8)
+    count <- 0
+    for (i in ds) {
+        count <- count + 1
+        ids <- names(sort(gene.tab[, count])[1:top])
+        points(Tc[ids, ], col = color[i + 1], pch = 16)
+        textxy(Tc[ids, 1], Tc[ids, 2], ids, col = color[i + 1])
+    }
+    results <- list()
+    results$gene.tab <- gene.tab
+    results$path.tab <- path.tab
+    return(results)
+}
+```
+
+
+```{r}
+library(directPA)
+dE2 <- directExplorer2d(df_zscore, nd = 8, top = 10, 
+                        annotation = Pathways.reactome, 
+                        ylab = "Native Organ Fibrosis", 
+                        xlab = "Transplant Organ\nFibrosis")
+dE2$path.tab <- dE2$path.tab %>%
+  data.frame()
+colnames(dE2$path.tab)[-1] <- colnames(dE2$gene.tab)
+```
+
+
+```{r, fig.width=8, fig.height=6}
+library(stringr)
+q1 <- dE2$path.tab %>%
+  dplyr::select(size, `+*`) %>%
+  arrange(`+*`) %>%
+  top_n(-20) %>%
+  mutate(Pathway = sub("REACTOME_", "", rownames(.)),
+         Pathway = str_wrap(gsub("_", " ", Pathway), width = 40),
+         Score = -log10(`+*`)) %>%
+  filter(nchar(Pathway) <= 60) %>% 
+  ggplot(aes(y = forcats::fct_reorder(Pathway, Score), x = Score)) + 
+  geom_col(fill = "#FFBF00") + 
+  theme_bw() + 
+  labs(y = NULL, x = "-log10 P-Value") +
+  theme(axis.text.y = element_text(size = 12)) +
+  theme(axis.text.x = element_text(size = 12))
+
+q1
+```
+
+```{r}
+genes <- dE2$gene.tab[,"+*"]
+
+gene_list = sort(genes, decreasing = F)
+
+library(org.Hs.eg.db)
+organism = "org.Hs.eg.db"
+gse <- gseGO(geneList=gene_list, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05,
+             verbose = TRUE, 
+             OrgDb = organism,
+             eps = 0,
+             pAdjustMethod = "none")
+
+gse@result %>%
+  mutate(Score = -log10(pvalue), Direction = ifelse(NES > 0, "Up-Regulated", "Down-Regulated")) %>%
+  top_n(Score, n = 25) %>%
+  ggplot(aes(y = reorder(Description, Score), x = Score)) + geom_point(size = 4) + theme_bw() + ylab("") +
+  xlab("-log10 pvalue") + facet_wrap(.~Direction)
+```
+
+Look at progression now.
+```{r}
+setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Progression/Processed_Datasets")
+files <- list.files()
+Progression_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+  y %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene.Symbol) & !is.na(Gene.Symbol)) %>%
+    tibble::column_to_rownames("Gene.Symbol") %>%
+    dplyr::select(t)
+})
+
+int <- Reduce(intersect, lapply(Progression_Counts, rownames))
+test_list <-  lapply(Progression_Counts, function(x)x[int,, drop = FALSE])
+
+Progtest_df <- do.call(cbind, test_list)
+Z.Scores.Prog <- apply(Progtest_df, 2, function(x) {
+        stats::qnorm(rank(x)/(nrow(Progtest_df) + 1))
+})
+data(Pathways, package = "directPA")
+gene.pvalues <- apply(Z.Scores.Prog, 1, function(x) {
+  directPA::geneStats(x)
+})
+gene.zscoresProg <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+pvalue2sided <- 2 * stats::pnorm(-abs(gene.zscoresProg))
+sig.genesProg <- names(sort(pvalue2sided))[1:50]
+
+gene.zscoresProg <- gene.zscoresProg %>%
+  enframe() %>%
+  column_to_rownames("name")
+gene.zscores_Tx <- gene.zscores %>%
+  enframe() %>%
+  column_to_rownames("name")
+
+int <- intersect(rownames(gene.zscoresProg), rownames(gene.zscores_Tx))
+ProgressionTx <- data.frame(gene.zscoresProg[int,], gene.zscores_Tx[int,], row.names = int)
+colnames(ProgressionTx) <- c("Prog", "Fibrosis")
+```
+
+
+```{r,fig.width=4, fig.height=5}
+ProgressionTx %>%
+  mutate(lancet = factor(ifelse(rownames(ProgressionTx) %in% lancet_genes, "Yes", "No"))) %>%
+  ggplot(aes(x = Prog, y = Fibrosis)) + geom_point(alpha = 0.4) + theme_bw() + geom_smooth(method = "lm") +
+  xlab("Grafts that will become fibrotic") + ylab("Biopsy proven fibrosis") + coord_fixed(ratio = 1)
+```
+
+
+```{r}
+myDirectExplorer2d(ProgressionTx, top = 20, xlab = "Grafts that will become fibrotic", ylab = "Biopsy proven fibrosis")
+
+summary(lm(ProgressionTx$Prog ~ ProgressionTx$Fibrosis))
+```
+
+```{r}
+prog_scores <- gene.zscoresProg$value
+names(prog_scores) <- rownames(gene.zscoresProg)
+gene_list <- prog_scores[which(abs(prog_scores) > 2)]
+gene_list = sort(gene_list, decreasing = TRUE)
+
+library(org.Hs.eg.db)
+organism = "org.Hs.eg.db"
+gse <- gseGO(geneList=gene_list, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05,
+             verbose = TRUE, 
+             OrgDb = organism,
+             eps = 0,
+             pAdjustMethod = "none")
+
+gse@result %>%
+  mutate(Score = -log10(pvalue), Direction = ifelse(NES > 0, "Up-Regulated", "Down-Regulated")) %>%
+  top_n(Score, n = 25) %>%
+  ggplot(aes(y = reorder(Description, Score), x = Score)) + geom_point(size = 4) + theme_bw() + ylab("") +
+  xlab("-log10 pvalue") + facet_wrap(.~Direction)
+```
+
+
+

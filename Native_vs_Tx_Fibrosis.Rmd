@@ -1,0 +1,249 @@
+---
+title: "Native_vs_Tx_Fibrosis"
+output: html_document
+date: "2023-11-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We will need our TOP package from Bioc.
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("TOP")
+```
+
+Load in the libraries we need for this.
+```{r}
+library(TOP) # Version 1.2.0
+library(dplyr)
+library(tibble)
+```
+
+First we 
+```{r}
+setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/Fibrosis/Processed_Datasets")
+files <- list.files(pattern = "_Tx")
+Fibrosis_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+  y %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene.Symbol) & !is.na(Gene.Symbol)) %>%
+    tibble::column_to_rownames("Gene.Symbol") %>%
+    dplyr::select(t)
+})
+
+# We only want to keep datasets that have a meaningful number of features.
+keep <- Fibrosis_Counts %>% sapply(nrow) > 10000 
+Fibrosis_Counts <- Fibrosis_Counts[keep]
+int <- Reduce(intersect, lapply(Fibrosis_Counts, rownames))
+test_list <-  lapply(Fibrosis_Counts, function(x)x[int,, drop = FALSE])
+
+# concatinate the gene level summaries across datasets.
+test_df <- do.call(cbind, test_list)
+Z.Scores.All <- apply(test_df, 2, function(x) {
+        stats::qnorm(rank(x)/(nrow(test_df) + 1))
+})
+
+# Perform pvalue combination using the directPA package.
+data(Pathways, package = "directPA")
+gene.pvalues <- apply(Z.Scores.All, 1, function(x) {
+  directPA::geneStats(x)
+})
+gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
+pvalue2sided <- 2 * stats::pnorm(-abs(gene.zscores))
+
+# Let's pull out the top 50 genes.
+sig.genes <- names(sort(pvalue2sided))[1:50]
+```
+
+Let's compare the gene expression between native and transplant organ fibrosis.
+```{r}
+setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/Fibrosis/Processed_Datasets")
+
+# Read in the data
+names <-list.files()
+list_tStats <- lapply(list.files(), read.csv)
+list_tStats <- lapply(list_tStats, function(x){
+  x %>%
+    dplyr::select(Gene.Symbol, t)
+})
+
+# Pull everything into one clean dataframe
+list_tStats <- Reduce(function(x, y) merge(x, y, by = "Gene.Symbol", all = TRUE), list_tStats)
+list_tStats <- list_tStats[which(!duplicated(list_tStats$Gene.Symbol) & !is.na(list_tStats$Gene.Symbol)), ]
+list_tStats <- list_tStats[-c(1:3),] # These genes make no sense
+rownames(list_tStats) <- NULL
+
+# Remove any NA's
+library(tibble)
+list_tStats <- list_tStats %>%
+  column_to_rownames(var = "Gene.Symbol") %>%
+  na.omit()
+
+# Annotating dataframe
+library(TOP)
+GSE <- TOP:::str_split_n(names, "_", 2)
+OrganTx <- TOP:::str_split_n(names, "_", 5)
+TxType <- sub(".csv", "", TOP:::str_split_n(names, "_", 6))
+
+anno_df <- data.frame(OrganTx, TxType)
+
+# Seperating Native and Tx
+list_tStats_Tx <- list_tStats[,which(TxType == "Tx")]
+list_tStats_Native <- list_tStats[,which(TxType != "Tx")]
+
+# Run directPA
+library(directPA)
+library(PhosR)
+data(Pathways)
+
+# Combined pvalues using directPA
+Z.Scores.All <- apply(list_tStats_Tx, 2, function(x){qnorm(rank(x)/(nrow(list_tStats_Tx)+1))})
+gene.pvalues <- apply(Z.Scores.All, 1, function(x){geneStats(x)})
+gene.zscores_Tx <- qnorm(gene.pvalues, lower.tail = FALSE) %>%
+  data.frame()
+
+# Combined pvalues using directPA
+Z.Scores.All <- apply(list_tStats_Native, 2, function(x){qnorm(rank(x)/(nrow(list_tStats_Native)+1))})
+gene.pvalues <- apply(Z.Scores.All, 1, function(x){geneStats(x)})
+gene.zscores_Native <- qnorm(gene.pvalues, lower.tail = FALSE) %>%
+  data.frame()
+
+# Merge the two results into one dataframe.
+all(rownames(gene.zscores_Tx) == rownames(gene.zscores_Native))
+df_zscore <- cbind(gene.zscores_Tx, gene.zscores_Native)
+colnames(df_zscore) <- c("Tx", "Native")
+
+# Plot Results
+library(plotly)
+data(Pathways)
+dPA <- directPA(df_zscore, direction = pi/4, annotation = Pathways.reactome, visualize = TRUE, 
+                        ylab = "Native Organ Fibrosis", 
+                        xlab = "Transplant Organ\nFibrosis")
+```
+
+Next, load in the AUSCAD data for validation.
+```{r, warning=FALSE, message=FALSE}
+DGE <- readRDS("/dskh/nobackup/harryr/POAD_Validation/AUSCAD_3m_Bx_Fibrosis.Rds")
+lcpm <- DGE$counts # Pull out counts.
+```
+
+We will now load in the fibrosis counts. Eventually returning a list containing a matrices of counts, and a list containing the different outcomes for each dataset.
+```{r}
+setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/Fibrosis/Normalised_Counts/")
+files <- list.files()
+Biopsy_Counts <- lapply(files, function(x){
+  y <- read.csv(x) 
+})
+
+Biopsy_Counts <- lapply(Biopsy_Counts, function(x){
+  x %>%
+    dplyr::select(-X) %>%
+    tibble::remove_rownames() %>%
+    filter(!duplicated(Gene_Symbol) & !is.na(Gene_Symbol)) %>%
+    tibble::column_to_rownames("Gene_Symbol")
+})
+
+int <- Reduce(intersect, lapply(Biopsy_Counts, rownames))
+test_list <-  lapply(Biopsy_Counts, function(x)x[int,, drop = FALSE])
+
+y_list <- list()
+for(i in seq_along(test_list)){
+  names <- colnames(test_list[[i]])
+  y_list[[i]] <- factor(ifelse(grepl("Control", names), "Control", "Fibrosis"))
+}
+test_list <- lapply(test_list, t)
+```
+
+We now want to build models based on naive or transplant fibrosis. To do so, we need to pull out dataset specific naming from the initial file naming.
+```{r}
+setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/Fibrosis/Processed_Datasets")
+names <- list.files()
+
+# Annotating dataframe
+library(TOP)
+GSE <- TOP:::str_split_n(names, "_", 2)
+OrganTx <- TOP:::str_split_n(names, "_", 5)
+TxType <- sub(".csv", "", TOP:::str_split_n(names, "_", 6))
+
+# merge the organ type and transplant (Tx or Naive) into one df.
+anno_df <- data.frame(OrganTx, TxType)
+```
+
+Next, we will use TOP to build a transplant specific fibrosis model.
+```{r}
+library(TOP)
+
+# Pull out all the datasets that are from transplant (Tx) fibrosis.
+tx_counts <- test_list[TxType == "Tx"]
+tx_outcome <- y_list[TxType == "Tx"]
+
+tx_features <- TOP::filterFeatures(tx_counts, tx_outcome, 
+                                   contrast = "Fibrosis - Control", nFeatures = 100)
+tx_features <- intersect(tx_features, rownames(lcpm))
+tx_counts = lapply(tx_counts, "[", , tx_features)
+
+tx_model <- TOP::TOP_model(tx_counts[-9], tx_outcome[-9]) # the 9th element of the list had too much missing data to be included.
+
+# Make predictions on the AUSCAD cohort. 
+filt_lcpm <- lcpm[tx_features,]
+tx_fib_predictions <- TOP::predict_TOP(tx_model$models, as.matrix(t(filt_lcpm)))
+DGE$samples$tx_fib_predictions <- as.numeric(tx_fib_predictions)
+```
+
+
+Next, we will use TOP to build a native-organ fibrosis model.
+```{r}
+library(TOP)
+
+# Pull out all the datasets that are from naive fibrosis.
+native_counts <- test_list[TxType == "Native"]
+native_outcome <- y_list[TxType == "Native"]
+
+# the 1st element of the list had too much missing data to be included.
+tx_features <- TOP::filterFeatures(native_counts[-1], native_outcome[-1], 
+                                   contrast = "Fibrosis - Control", nFeatures = 100)
+tx_features <- intersect(tx_features, rownames(lcpm))
+tx_counts = lapply(native_counts, "[", , tx_features)
+
+# the 1st element of the list had too much missing data to be included.
+tx_model <- TOP::TOP_model(tx_counts[-1], native_outcome[-1])
+
+# Make predictions on the fibrosis dataset from AUSCAD.
+filt_lcpm <- lcpm[tx_features,]
+native_fib_predictions <- TOP::predict_TOP(tx_model$models, as.matrix(t(filt_lcpm)))
+DGE$samples$native_fib_predictions <- as.numeric(native_fib_predictions)
+```
+We can create a custom plot that has the colours that we want.
+```{r}
+myROC_Plot <- function (roc_list) 
+{
+  library(pROC)
+    data.labels <- TOP:::extractAUC(roc_list)
+    pROC::ggroc(roc_list, size = 1.5) + theme_bw() +
+  scale_color_manual(name = "Model", values = c("#FBA730", "#0A87C6", "#FF9DA7"),
+                     labels = data.labels$label_long) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color = "grey50", linetype = "dashed") +
+  theme(legend.title = element_text(size = 14)) +
+  theme(legend.text = element_text(size = 12)) +
+  ggtitle("")
+}
+```
+
+Plot the transplant and naive models. 
+```{r}
+myROC_Plot(list(`Tx Model` = roc(DGE$samples$fibrosis_bin  ~ DGE$samples$tx_fib_predictions),
+                  `Native Model` = roc(DGE$samples$fibrosis_bin  ~ DGE$samples$native_fib_predictions)))
+```
+
+```{r}
+sessionInfo()
+```
+
+
+

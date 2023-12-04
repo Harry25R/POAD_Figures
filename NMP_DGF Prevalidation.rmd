@@ -98,14 +98,14 @@ Data_pred <- Data_pred %>%
 int <- intersect(colnames(Data[[1]]), rownames(Data_pred)) # Means we can model across studies.
 Data <- lapply(Data, "[", , int)
 
-sig.genes <- TOP::filter_features(Data, Condition, contrast = "EAD - Control", nFeatures = 20)
+sig.genes <- TOP::filterFeatures(Data, Condition, contrast = "EAD - Control", nFeatures = 20)
 Data_temp = lapply(Data, "[", , sig.genes)
 Data_temp = lapply(Data_temp, as.matrix)
 
 x_list <- lapply(Data_temp, as.matrix)
 y_list <- lapply(Condition, factor)
 
-fCPOP_model <- TOP_model(x_list, y_list, dataset_weights = Tissue, sample_weights = TRUE)
+fCPOP_model <- TOP::TOP_model(x_list, y_list, dataset_weights = Tissue, sample_weights = TRUE)
 
 a1 <- fCPOP_model$feature %>%
   tibble::enframe() %>%
@@ -149,6 +149,7 @@ Time <- Time %>%
 Tissue <- Tissue %>%
   unlist()
 
+# Plot the boxplot of predictions
 pred %>%
   data.frame() %>%
   mutate(Condition = Condition,

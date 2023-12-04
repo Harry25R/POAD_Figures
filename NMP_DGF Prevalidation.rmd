@@ -8,6 +8,7 @@ date: "2022-10-26"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+First off we want to read in the data from PROMAD. 
 ```{r}
 setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/PreTransplant/Normalised_Counts")
 fnames <- list.files()
@@ -15,7 +16,7 @@ fnames <- paste0("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/PreTrans
 
 Data_List <- lapply(fnames, function(x){
   df <- read.csv(x)
-  df <- df[,-1] 
+  df <- df[,-1] # First column is gene names.
   colnames(df)[grep("Gene", colnames(df))] <- "Gene_Symbol"
   df <- df %>%
     relocate("Gene_Symbol")
@@ -23,7 +24,7 @@ Data_List <- lapply(fnames, function(x){
 
 data_lengths <- lapply(Data_List, function(x) dim(x)[2]-1)
 suppressWarnings(
-  Data <- Reduce(function(x, y) merge(x, y, by = "Gene_Symbol", all = TRUE), Data_List)
+  Data <- Reduce(function(x, y) merge(x, y, by = "Gene_Symbol", all = TRUE), Data_List) # Merge data
 )
 Data <- Data %>%
   na.omit() 
@@ -55,7 +56,7 @@ Tissue <- Tissue %>%
 Condition <- ifelse(grepl("Control", colnames(Data)), "Control", "EAD") 
 ```
 
-Splitting by batch
+Splitting by dataset. We want a list of dataset for TOP to use later.
 ```{r}
 Data <- Data %>%
   na.omit() %>%
@@ -67,24 +68,7 @@ Condition <- Condition %>%
   split(Batch)
 ```
 
-```{r}
-# AUC <- c()
-# for(i in seq_along(Data)){
-#   sig.genes <- PreProcess_Frank(Data[-i], Condition[-i], contrast = "EAD - Control", nFeatures = 50)
-#   Data_temp = lapply(Data, "[", , sig.genes)
-#   Data_temp = lapply(Data_temp, as.matrix)
-# 
-#   x_list <- lapply(Data_temp, as.matrix)[-i]
-#   y_list <- lapply(Condition, factor)[-i]
-# 
-#   fCPOP_model <- Frankenstein_CPOP(x_list, y_list, dataset_weights = Tissue[-i])
-#   pred <- predict_cpop2(fCPOP_model$models, newx = as.matrix(Data_temp[[i]]))
-# 
-#   roc_fCPOP <- roc(factor(Condition[[i]]), pred)
-#   AUC[i] <- as.numeric(roc_fCPOP$auc)
-# }
-```
-
+Next we want to load in the NMP data from PROMAD.
 ```{r}
 setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/NMP/Normalised_Counts")
 fnames <- list.files()
@@ -111,17 +95,17 @@ Data_pred <- Data_pred %>%
 ```
 
 ```{r}
-int <- intersect(colnames(Data[[1]]), rownames(Data_pred))
+int <- intersect(colnames(Data[[1]]), rownames(Data_pred)) # Means we can model across studies.
 Data <- lapply(Data, "[", , int)
 
-sig.genes <- PreProcess_Frank(Data, Condition, contrast = "EAD - Control", nFeatures = 20)
+sig.genes <- TOP::filter_features(Data, Condition, contrast = "EAD - Control", nFeatures = 20)
 Data_temp = lapply(Data, "[", , sig.genes)
 Data_temp = lapply(Data_temp, as.matrix)
 
 x_list <- lapply(Data_temp, as.matrix)
 y_list <- lapply(Condition, factor)
 
-fCPOP_model <- Frankenstein_CPOP(x_list, y_list, dataset_weights = Tissue, sample_weights = TRUE)
+fCPOP_model <- TOP_model(x_list, y_list, dataset_weights = Tissue, sample_weights = TRUE)
 
 a1 <- fCPOP_model$feature %>%
   tibble::enframe() %>%

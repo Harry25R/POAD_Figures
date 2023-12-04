@@ -10,10 +10,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 library(tibble)
 library(dplyr)
-
-12!
 ```
 
+Let's first read in the data from PROAMD from rejected blood samples.
 ```{r}
 setwd("~/Desktop/PhD/Pan Organ Allograft Dysfunction/Pan-Organ Allograft Dysfunction/Rejection/Processed_Datasets")
 files <- list.files(pattern = "Blood")
@@ -27,12 +26,13 @@ Blood_Counts <- lapply(files, function(x){
     dplyr::select(t)
 })
 
-keep <- Blood_Counts %>% sapply(nrow) > 8000
+keep <- Blood_Counts %>% sapply(nrow) > 8000 # Remove the small arrays from PROMAD.
 Blood_Counts <- Blood_Counts[keep]
 
 int <- Reduce(intersect, lapply(Blood_Counts, rownames))
 test_list <-  lapply(Blood_Counts, function(x)x[int,, drop = FALSE])
 
+# DirectPA as a method of combining pvalue.
 test_df <- do.call(cbind, test_list)
 Z.Scores.All <- apply(test_df, 2, function(x) {
         stats::qnorm(rank(x)/(nrow(test_df) + 1))
@@ -45,7 +45,7 @@ gene.zscores <- stats::qnorm(gene.pvalues, lower.tail = FALSE)
 blood_df <- gene.zscores %>% tibble::enframe()
 ```
 
-Common Genes to Organs
+Determining common Genes to Organs
 ```{r}
 Tissue <- sub(".csv", "", CPOP2:::str_split_n(files[keep], "_", 5))
 Tissue[Tissue == ""] <- "Kidney"
@@ -58,6 +58,7 @@ test_df.Kidney <- test_df[,Kidney_idx]
 test_df.Liver <- as.matrix(test_df[,Liver_idx])
 test_df.Heart <- test_df[,Heart_idx]
 
+# Create a gene set per organ.
 Gene_sets <- lapply(list(test_df.Kidney, test_df.Liver, test_df.Heart), function(x){
   Z.Scores.All <- apply(x, 2, function(y) {
         stats::qnorm(rank(y)/(nrow(x) + 1))

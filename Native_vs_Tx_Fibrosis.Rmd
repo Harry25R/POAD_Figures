@@ -23,9 +23,9 @@ library(dplyr)
 library(tibble)
 ```
 
-First we 
+First we load in data from PROMAD
 ```{r}
-setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/Fibrosis/Processed_Datasets")
+setwd("Fibrosis/Processed_Datasets")
 files <- list.files(pattern = "_Tx")
 Fibrosis_Counts <- lapply(files, function(x){
   y <- read.csv(x) 
@@ -63,7 +63,7 @@ sig.genes <- names(sort(pvalue2sided))[1:50]
 
 Let's compare the gene expression between native and transplant organ fibrosis.
 ```{r}
-setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/Fibrosis/Processed_Datasets")
+setwd("Fibrosis/Processed_Datasets")
 
 # Read in the data
 names <-list.files()
@@ -129,13 +129,13 @@ dPA <- directPA(df_zscore, direction = pi/4, annotation = Pathways.reactome, vis
 
 Next, load in the AUSCAD data for validation.
 ```{r, warning=FALSE, message=FALSE}
-DGE <- readRDS("/dskh/nobackup/harryr/POAD_Validation/AUSCAD_3m_Bx_Fibrosis.Rds")
+DGE <- readRDS("AUSCAD_3m_Bx_Fibrosis.Rds")
 lcpm <- DGE$counts # Pull out counts.
 ```
 
 We will now load in the fibrosis counts. Eventually returning a list containing a matrices of counts, and a list containing the different outcomes for each dataset.
 ```{r}
-setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/Fibrosis/Normalised_Counts/")
+setwd("Fibrosis/Normalised_Counts/")
 files <- list.files()
 Biopsy_Counts <- lapply(files, function(x){
   y <- read.csv(x) 
@@ -162,7 +162,7 @@ test_list <- lapply(test_list, t)
 
 We now want to build models based on naive or transplant fibrosis. To do so, we need to pull out dataset specific naming from the initial file naming.
 ```{r}
-setwd("/dskh/nobackup/harryr/Pan-Organ Allograft Dysfunction/Fibrosis/Processed_Datasets")
+setwd("Fibrosis/Processed_Datasets")
 names <- list.files()
 
 # Annotating dataframe

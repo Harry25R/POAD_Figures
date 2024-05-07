@@ -7,6 +7,8 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+Within PROMAD we do not have the individual scRNAseq datasets available for download. Instead opting to provide the integrated dataset. However, we can provide the code used to generate the integrated dataset.
+
 ```{r, message = FALSE}
 suppressPackageStartupMessages({
   library(SingleCellExperiment)
